@@ -1,0 +1,9 @@
+rules:
+  - id: add-zero-fold
+    message: "Replace x + 0 with x"
+    languages: [c, cpp]
+    severity: INFO
+    patterns:
+      - pattern: $X + 0
+      - pattern-not: 0 + $X
+    fix: $X
