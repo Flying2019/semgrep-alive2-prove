@@ -27,11 +27,11 @@
 	# 输出：build/reports/semgrep.json
 	```
 
-3. 将 Semgrep 规则尝试转化为 LLVM IR 规则对：
+3. 将单个 Semgrep 规则文件转化为 LLVM IR 规则对：
 
 	```sh
 	make ir
-	# 输出：build/ir/*.ll
+	# 输出：build/ir/*.ll（按规则文件生成）
 	```
 
 4. 使用 Alive2 对生成的 LLVM IR 规则进行验证（需要已安装 `alive-tv`，否则自动跳过）：

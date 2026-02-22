@@ -26,7 +26,13 @@ semgrep: $(BUILD_DIR)
 	@echo "Semgrep findings written to $(REPORT_DIR)/semgrep.json"
 
 ir: $(BUILD_DIR)
-	$(PYTHON) semgrep_to_IR.py --rules $(RULE_DIR) --out $(IR_DIR)
+	@found=0; \
+	for f in $(RULE_DIR)/*.yaml; do \
+	  [ -e $$f ] || continue; \
+	  found=1; \
+	  $(PYTHON) semgrep_to_IR.py $$f --out $(IR_DIR); \
+	done; \
+	if [ $$found -eq 0 ]; then echo "No rule files under $(RULE_DIR)" && exit 1; fi
 
 alive: ir
 	@if command -v $(ALIVE_BIN) >/dev/null 2>&1; then \
