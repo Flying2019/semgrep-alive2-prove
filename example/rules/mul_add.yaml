@@ -1,0 +1,14 @@
+rules:
+  - id: mul-add-shift
+    message: "Fold x*2 + y into (x<<1) + y"
+    languages: [c, cpp]
+    severity: INFO
+    patterns:
+      - pattern: $X * 2 + $Y
+    fix: ($X << 1) + $Y
+    metadata:
+      intent: arithmetic_strength_reduction
+      description: replace multiply-by-2 with shift-left
+      ir_flags:
+        mul: "nuw nsw"
+        shl: "nuw nsw"

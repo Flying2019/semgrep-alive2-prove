@@ -140,7 +140,7 @@ def collect_vars(expr: Expr, order: List[str]) -> None:
         collect_vars(expr.right, order)
 
 
-def ast_to_ir(expr: Expr, next_id: List[int]) -> Tuple[List[str], str]:
+def ast_to_ir(expr: Expr, next_id: List[int], op_flags: Dict[str, str]) -> Tuple[List[str], str]:
     """Return (instructions, value_name). next_id is a single-item counter."""
 
     if isinstance(expr, Var):
@@ -148,8 +148,8 @@ def ast_to_ir(expr: Expr, next_id: List[int]) -> Tuple[List[str], str]:
     if isinstance(expr, Const):
         return [], str(expr.value)
     if isinstance(expr, BinOp):
-        lhs_inst, lhs_val = ast_to_ir(expr.left, next_id)
-        rhs_inst, rhs_val = ast_to_ir(expr.right, next_id)
+        lhs_inst, lhs_val = ast_to_ir(expr.left, next_id, op_flags)
+        rhs_inst, rhs_val = ast_to_ir(expr.right, next_id, op_flags)
         tmp = f"%{next_id[0]}"
         next_id[0] += 1
         op_map = {
@@ -166,7 +166,9 @@ def ast_to_ir(expr: Expr, next_id: List[int]) -> Tuple[List[str], str]:
         llvm_op = op_map.get(expr.op)
         if llvm_op is None:
             raise ValueError(f"unsupported operator: {expr.op}")
-        inst = f"  {tmp} = {llvm_op} i32 {lhs_val}, {rhs_val}"
+        flags = op_flags.get(llvm_op, "")
+        flag_suffix = f" {flags}" if flags else ""
+        inst = f"  {tmp} = {llvm_op}{flag_suffix} i32 {lhs_val}, {rhs_val}"
         return lhs_inst + rhs_inst + [inst], tmp
     raise TypeError(f"unknown Expr node: {expr}")
 
@@ -200,7 +202,7 @@ def emit_ir(rule: Dict, out_dir: Path) -> Path:
 
     def build_func(name: str, ast: Expr) -> str:
         next_id = [0]
-        inst, result = ast_to_ir(ast, next_id)
+        inst, result = ast_to_ir(ast, next_id, op_flags)
         body = "\n".join(inst)
         if body:
             body += "\n"
@@ -212,6 +214,9 @@ def emit_ir(rule: Dict, out_dir: Path) -> Path:
             f"{body}  ret i32 {result}\n"
             f"}}\n"
         )
+
+    metadata = rule.get("metadata", {}) or {}
+    op_flags = {k: v for k, v in metadata.get("ir_flags", {}).items()}
 
     src_ir = build_func("src", src_ast)
     tgt_ir = build_func("tgt", tgt_ast)
