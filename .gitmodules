@@ -1,0 +1,3 @@
+[submodule "deps/alive2"]
+	path = deps/alive2
+	url = https://github.com/AliveToolkit/alive2
