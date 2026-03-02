@@ -5,8 +5,8 @@ entry:
   br label %outer
 
 outer:
-  %i = phi i32 [0, %entry], [%i.next, %outer.inc]
-  %acc.o = phi i32 [%x, %entry], [%acc.after, %outer.inc]
+  %i = phi i32 [0, %entry], [%i.next, %inner.exit]
+  %acc.o = phi i32 [%x, %entry], [%acc.after, %inner.exit]
   %cmp.i = icmp slt i32 %i, %n
   br i1 %cmp.i, label %inner.entry, label %exit
 
@@ -26,9 +26,6 @@ inner.body:
 
 inner.exit:
   %acc.after = add i32 %acc, 0
-  br label %outer.inc
-
-outer.inc:
   %i.next = add i32 %i, 1
   br label %outer
 
