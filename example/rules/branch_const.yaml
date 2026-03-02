@@ -1,0 +1,24 @@
+rules:
+  - id: branch-true-fold
+    message: "Fold if(1){return A;} else {return B;} into return A"
+    languages: [c, cpp]
+    severity: INFO
+    patterns:
+      - pattern: |
+          if (1) { return $A; } else { return $B; }
+    fix: return $A;
+    metadata:
+      branch_constant: true
+      intent: branch_const_fold
+
+  - id: branch-false-fold
+    message: "Fold if(0){return A;} else {return B;} into return B"
+    languages: [c, cpp]
+    severity: INFO
+    patterns:
+      - pattern: |
+          if (0) { return $A; } else { return $B; }
+    fix: return $B;
+    metadata:
+      branch_constant: false
+      intent: branch_const_fold

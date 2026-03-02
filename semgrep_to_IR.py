@@ -187,42 +187,108 @@ def extract_fix(rule: Dict) -> str:
     return fix
 
 
-def emit_ir(rule: Dict, out_dir: Path) -> Path:
-    pattern = extract_main_pattern(rule)
+def emit_ir(rule: Dict, out_dir: Path, pattern_override: str | None = None, id_suffix: str = "") -> Path:
+    rule_id = rule.get("id", "rule")
+    rule_id_full = f"{rule_id}{id_suffix}" if id_suffix else rule_id
+
+    pattern = pattern_override if pattern_override is not None else extract_main_pattern(rule)
     fix = extract_fix(rule)
-
-    src_ast = parse_expr(tokenize(pattern))
-    tgt_ast = parse_expr(tokenize(fix))
-
-    var_order: List[str] = []
-    collect_vars(src_ast, var_order)
-    collect_vars(tgt_ast, var_order)
-
-    params_sig = ", ".join(f"i32 %{v}" for v in var_order) if var_order else ""
-
-    def build_func(name: str, ast: Expr) -> str:
-        next_id = [0]
-        inst, result = ast_to_ir(ast, next_id, op_flags)
-        body = "\n".join(inst)
-        if body:
-            body += "\n"
-        return (
-            f"; Rule: {rule.get('id', 'unknown')}\n"
-            f"; Expression: {pattern if name=='src' else fix}\n"
-            f"define i32 @{name}({params_sig}) {{\n"
-            f"entry:\n"
-            f"{body}  ret i32 {result}\n"
-            f"}}\n"
-        )
 
     metadata = rule.get("metadata", {}) or {}
     op_flags = {k: v for k, v in metadata.get("ir_flags", {}).items()}
+    branch_const = metadata.get("branch_constant")
 
-    src_ir = build_func("src", src_ast)
-    tgt_ir = build_func("tgt", tgt_ast)
+    if branch_const is not None:
+        m = re.search(
+            r"if\s*\(\s*([01])\s*\)\s*\{\s*return\s*(.+?);\s*\}\s*else\s*\{\s*return\s*(.+?);\s*\}",
+            pattern,
+            re.DOTALL,
+        )
+        if not m:
+            raise ValueError(
+                f"branch_constant rule {rule_id_full} has unsupported pattern: {pattern!r}"
+            )
+        cond_val = m.group(1) == "1"
+        then_txt, else_txt = m.group(2).strip(), m.group(3).strip()
+
+        then_ast = parse_expr(tokenize(then_txt))
+        else_ast = parse_expr(tokenize(else_txt))
+
+        var_order: List[str] = []
+        collect_vars(then_ast, var_order)
+        collect_vars(else_ast, var_order)
+        params_sig = ", ".join(f"i32 %{v}" for v in var_order) if var_order else ""
+
+        def build_block(ast: Expr, next_id: List[int]) -> Tuple[List[str], str]:
+            inst, val = ast_to_ir(ast, next_id, op_flags)
+            return inst, val
+
+        next_id = [0]
+        then_inst, then_val = build_block(then_ast, next_id)
+        else_inst, else_val = build_block(else_ast, next_id)
+        cond_literal = "true" if cond_val else "false"
+
+        src_ir = "\n".join(
+            [
+                f"; Rule: {rule_id_full}",
+                f"; Expression: {pattern}",
+                f"define i32 @src({params_sig}) {{",
+                "entry:",
+                f"  br i1 {cond_literal}, label %then, label %else",
+                "then:",
+                *then_inst,
+                f"  ret i32 {then_val}",
+                "else:",
+                *else_inst,
+                f"  ret i32 {else_val}",
+                "}",
+                "",
+            ]
+        )
+
+        chosen_ast = then_ast if cond_val else else_ast
+        next_id = [0]
+        tgt_inst, tgt_val = build_block(chosen_ast, next_id)
+        tgt_body = "\n".join(tgt_inst)
+        if tgt_body:
+            tgt_body += "\n"
+        tgt_ir = (
+            f"; Rule: {rule_id_full}\n"
+            f"; Expression: {fix}\n"
+            f"define i32 @tgt({params_sig}) {{\n"
+            f"entry:\n"
+            f"{tgt_body}  ret i32 {tgt_val}\n"
+            f"}}\n"
+        )
+    else:
+        src_ast = parse_expr(tokenize(pattern))
+        tgt_ast = parse_expr(tokenize(fix))
+
+        var_order: List[str] = []
+        collect_vars(src_ast, var_order)
+        collect_vars(tgt_ast, var_order)
+        params_sig = ", ".join(f"i32 %{v}" for v in var_order) if var_order else ""
+
+        def build_func(name: str, ast: Expr) -> str:
+            next_id = [0]
+            inst, result = ast_to_ir(ast, next_id, op_flags)
+            body = "\n".join(inst)
+            if body:
+                body += "\n"
+            return (
+                f"; Rule: {rule_id_full}\n"
+                f"; Expression: {pattern if name=='src' else fix}\n"
+                f"define i32 @{name}({params_sig}) {{\n"
+                f"entry:\n"
+                f"{body}  ret i32 {result}\n"
+                f"}}\n"
+            )
+
+        src_ir = build_func("src", src_ast)
+        tgt_ir = build_func("tgt", tgt_ast)
 
     out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = out_dir / f"{rule.get('id', 'rule')}.ll"
+    out_path = out_dir / f"{rule_id_full}.ll"
 
     with out_path.open("w", encoding="ascii") as f:
         f.write(src_ir)
@@ -246,8 +312,24 @@ def convert_file(rule_file: Path, out_dir: Path) -> None:
 
     generated = []
     for rule in rules:
-        out_path = emit_ir(rule, out_dir)
-        generated.append(out_path)
+        rule_id = rule.get("id", "rule")
+
+        variants: List[Tuple[str, str]] = []
+        for pat in rule.get("patterns", []):
+            if "pattern-either" in pat:
+                alts = pat["pattern-either"] or []
+                for idx, alt in enumerate(alts, start=1):
+                    if "pattern" in alt:
+                        variants.append((alt["pattern"], f"_alt{idx}"))
+            elif "pattern" in pat:
+                variants.append((pat["pattern"], ""))
+
+        if not variants:
+            raise SystemExit(f"rule {rule_id} has no usable pattern")
+
+        for pattern_txt, suffix in variants:
+            out_path = emit_ir(rule, out_dir, pattern_override=pattern_txt, id_suffix=suffix)
+            generated.append(out_path)
 
     print("Generated LLVM IR:")
     for path in generated:

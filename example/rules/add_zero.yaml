@@ -4,5 +4,7 @@ rules:
     languages: [c, cpp]
     severity: INFO
     patterns:
-      - pattern: $X + 0
+      - pattern-either:
+        - pattern: 0 + $X
+        - pattern: $X + 0
     fix: $X
