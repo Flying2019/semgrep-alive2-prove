@@ -5,5 +5,4 @@ rules:
     severity: INFO
     patterns:
       - pattern: $X + 0
-      - pattern-not: 0 + $X
     fix: $X

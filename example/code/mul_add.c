@@ -11,5 +11,5 @@ int mul_add_nested(int x, int y, int z) {
 
 int mul_add_paren(int x, int y) {
   // Parentheses preserved by Semgrep; parser supports them
-  return (x * 2) + y;
+  return x * 2 + y;
 }

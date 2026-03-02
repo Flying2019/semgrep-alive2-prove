@@ -2,11 +2,13 @@
 
 PYTHON ?= python3
 RULE_DIR := example/rules
+RULE_FILES := $(wildcard $(RULE_DIR)/*.yaml)
 CODE_DIR := example/code
 BUILD_DIR := build
 IR_DIR := $(BUILD_DIR)/ir
 REPORT_DIR := $(BUILD_DIR)/reports
 OUT_DIR := $(BUILD_DIR)/out
+IR_FILES := $(patsubst $(RULE_DIR)/%.yaml,$(IR_DIR)/%.ll,$(RULE_FILES))
 ALIVE2_DIR := deps/alive2
 ALIVE2_BUILD := $(ALIVE2_DIR)/build
 ALIVE_BIN ?= $(ALIVE2_BUILD)/alive-tv
@@ -14,12 +16,15 @@ LLVM_DIR ?= /usr/lib/llvm-20/lib/cmake/llvm
 ALIVE2_REF ?= v20.0
 ALIVE_FLAGS ?= --smt-to=60000
 
-.PHONY: all setup semgrep ir alive apply clean
+.PHONY: all semgrep alive apply clean
 
 all: setup semgrep ir alive apply
 
-setup:
-	$(PYTHON) -m pip install -r requirements.txt
+setup: $(BUILD_DIR)/.setup
+
+$(BUILD_DIR)/.setup: requirements.txt | $(BUILD_DIR)
+	$(PYTHON) -m pip install -r $<
+	touch $@
 
 $(BUILD_DIR):
 	mkdir -p $(IR_DIR) $(REPORT_DIR) $(OUT_DIR)
@@ -30,14 +35,11 @@ semgrep: $(BUILD_DIR)
 	  if [ $$rc -gt 1 ]; then exit $$rc; fi
 	@echo "Semgrep findings written to $(REPORT_DIR)/semgrep.json"
 
-ir: $(BUILD_DIR)
-	@found=0; \
-	for f in $(RULE_DIR)/*.yaml; do \
-	  [ -e $$f ] || continue; \
-	  found=1; \
-	  $(PYTHON) semgrep_to_IR.py $$f --out $(IR_DIR); \
-	done; \
-	if [ $$found -eq 0 ]; then echo "No rule files under $(RULE_DIR)" && exit 1; fi
+ir: $(IR_FILES)
+	@echo "IR up to date under $(IR_DIR)"
+
+$(IR_DIR)/%.ll: $(RULE_DIR)/%.yaml semgrep_to_IR.py | $(IR_DIR)
+	$(PYTHON) semgrep_to_IR.py $< --out $(IR_DIR)
 
 $(ALIVE2_BUILD)/.built:
 	git submodule update --init --recursive $(ALIVE2_DIR)
@@ -60,9 +62,12 @@ alive: ir $(ALIVE2_BUILD)/.built
 
 apply: semgrep
 	rsync -a $(CODE_DIR)/ $(OUT_DIR)/
-	@semgrep scan --config $(RULE_DIR) --autofix --timeout 60 $(OUT_DIR); \
+	@files=$$(find $(OUT_DIR) -type f \( -name '*.c' -o -name '*.cpp' \)); \
+	if [ -z "$$files" ]; then echo "No source files under $(OUT_DIR)"; else \
+	  semgrep scan --config $(RULE_DIR) --autofix --timeout 60 --no-git-ignore $$files; \
 	  rc=$$?; \
-	  if [ $$rc -gt 1 ]; then exit $$rc; fi
+	  if [ $$rc -gt 1 ]; then exit $$rc; fi; \
+	fi
 	@echo "Rewritten sources placed under $(OUT_DIR)" 
 
 clean:
