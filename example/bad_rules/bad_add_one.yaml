@@ -1,0 +1,11 @@
+rules:
+  - id: bad-add-one-to-x
+    message: "INC -> identity (incorrect)"
+    languages: [c, cpp]
+    severity: ERROR
+    patterns:
+      - pattern: $X + 1
+    fix: $X
+    metadata:
+      intent: negative_wrong_arithmetic
+      note: This is intentionally incorrect; Alive2 should reject it.

@@ -194,11 +194,162 @@ def emit_ir(rule: Dict, out_dir: Path, pattern_override: str | None = None, id_s
     pattern = pattern_override if pattern_override is not None else extract_main_pattern(rule)
     fix = extract_fix(rule)
 
+    def expr_comment(txt: str) -> str:
+        lines = txt.strip("\n").split("\n")
+        if not lines:
+            return "; Expression:\n"
+        out = [f"; Expression: {lines[0]}"]
+        for line in lines[1:]:
+            out.append(f"; {line}")
+        return "\n".join(out) + "\n"
+
     metadata = rule.get("metadata", {}) or {}
     op_flags = {k: v for k, v in metadata.get("ir_flags", {}).items()}
+    for_accum = metadata.get("for_accumulate")
     branch_const = metadata.get("branch_constant")
+    loop_const = metadata.get("loop_constant")
 
-    if branch_const is not None:
+    if for_accum is not None:
+        if not isinstance(for_accum, dict):
+            raise ValueError(
+                f"for_accumulate for rule {rule_id_full} must be a mapping with iterator/bound/accumulator/term"
+            )
+
+        def strip_dollar(name: str) -> str:
+            return name[1:] if name.startswith("$") else name
+
+        iter_mv = str(for_accum.get("iterator", "$i"))
+        bound_mv = str(for_accum.get("bound", "$n"))
+        acc_mv = str(for_accum.get("accumulator", "$a"))
+        term_mv = str(for_accum.get("term", "$x"))
+
+        missing = [k for k, v in {
+            "iterator": iter_mv,
+            "bound": bound_mv,
+            "accumulator": acc_mv,
+            "term": term_mv,
+        }.items() if not v]
+        if missing:
+            raise ValueError(
+                f"for_accumulate rule {rule_id_full} missing keys: {', '.join(missing)}"
+            )
+
+        iter_re = re.escape(iter_mv)
+        bound_re = re.escape(bound_mv)
+        acc_re = re.escape(acc_mv)
+        term_re = re.escape(term_mv)
+
+        pat_re = re.compile(
+            rf"for\s*\(\s*(?:int\s+)?{iter_re}\s*=\s*0\s*;\s*{iter_re}\s*<\s*{bound_re}\s*;\s*{iter_re}\s*\+\+\s*\)\s*"
+            rf"(?:\{{\s*{acc_re}\s*\+=\s*{term_re}\s*;\s*\}}|{acc_re}\s*\+=\s*{term_re}\s*;)",
+            re.DOTALL,
+        )
+
+        if not pat_re.search(pattern):
+            raise ValueError(
+                f"for_accumulate rule {rule_id_full} has unsupported pattern: {pattern!r}"
+            )
+
+        acc_var = strip_dollar(acc_mv)
+        bound_var = strip_dollar(bound_mv)
+        term_var = strip_dollar(term_mv)
+
+        var_order: List[str] = []
+        for v in (acc_var, bound_var, term_var):
+            if v not in var_order:
+                var_order.append(v)
+        params_sig = ", ".join(f"i32 %{v}" for v in var_order)
+
+        def flag_suffix(op: str) -> str:
+            flags = op_flags.get(op, "")
+            return f" {flags}" if flags else ""
+
+        add_flags = flag_suffix("add")
+        mul_flags = flag_suffix("mul")
+
+        src_ir = (
+            f"; Rule: {rule_id_full}\n"
+            f"{expr_comment(pattern)}"
+            f"define i32 @src({params_sig}) {{\n"
+            "entry:\n"
+            "  br label %loop\n"
+            "loop:\n"
+            f"  %i = phi i32 [0, %entry], [%i.next, %body]\n"
+            f"  %acc.cur = phi i32 [%{acc_var}, %entry], [%acc.next, %body]\n"
+            f"  %cmp = icmp slt i32 %i, %{bound_var}\n"
+            "  br i1 %cmp, label %body, label %exit\n"
+            "body:\n"
+            f"  %acc.next = add{add_flags} i32 %acc.cur, %{term_var}\n"
+            "  %i.next = add i32 %i, 1\n"
+            "  br label %loop\n"
+            "exit:\n"
+            "  ret i32 %acc.cur\n"
+            "}\n"
+        )
+
+        tgt_ir = (
+            f"; Rule: {rule_id_full}\n"
+            f"{expr_comment(fix)}"
+            f"define i32 @tgt({params_sig}) {{\n"
+            "entry:\n"
+            f"  %no.iter = icmp sle i32 %{bound_var}, 0\n"
+            f"  %term.safe = select i1 %no.iter, i32 0, i32 %{term_var}\n"
+            f"  %prod = mul{mul_flags} i32 %{bound_var}, %term.safe\n"
+            f"  %res = add{add_flags} i32 %{acc_var}, %prod\n"
+            "  ret i32 %res\n"
+            "}\n"
+        )
+    elif loop_const is not None:
+        m = re.search(
+            r"while\s*\(\s*([01])\s*\)\s*\{.*?\}\s*return\s*(.+?);",
+            pattern,
+            re.DOTALL,
+        )
+        if not m:
+            raise ValueError(
+                f"loop_constant rule {rule_id_full} has unsupported pattern: {pattern!r}"
+            )
+
+        cond_val = m.group(1) == "1"
+        if cond_val:
+            raise ValueError(
+                f"loop_constant rule {rule_id_full} with condition 1 is unsupported for IR emission without returns inside loop"
+            )
+
+        def strip_trailing_semis(txt: str) -> str:
+            return txt.rstrip().rstrip(";").strip()
+
+        ret_expr_txt = strip_trailing_semis(m.group(2))
+        ret_ast = parse_expr(tokenize(ret_expr_txt))
+
+        var_order: List[str] = []
+        collect_vars(ret_ast, var_order)
+        params_sig = ", ".join(f"i32 %{v}" for v in var_order) if var_order else ""
+
+        next_id = [0]
+        ret_inst, ret_val = ast_to_ir(ret_ast, next_id, op_flags)
+        ret_body = "\n".join(ret_inst)
+        if ret_body:
+            ret_body += "\n"
+
+        src_ir = (
+            f"; Rule: {rule_id_full}\n"
+            f"{expr_comment(pattern)}"
+            f"define i32 @src({params_sig}) {{\n"
+            f"entry:\n"
+            f"{ret_body}  ret i32 {ret_val}\n"
+            f"}}\n"
+        )
+
+        tgt_ir = (
+            f"; Rule: {rule_id_full}\n"
+            f"{expr_comment(fix)}"
+            f"define i32 @tgt({params_sig}) {{\n"
+            f"entry:\n"
+            f"{ret_body}  ret i32 {ret_val}\n"
+            f"}}\n"
+        )
+    elif branch_const is not None:
         m = re.search(
             r"if\s*\(\s*([01])\s*\)\s*\{\s*return\s*(.+?);\s*\}\s*else\s*\{\s*return\s*(.+?);\s*\}",
             pattern,
@@ -231,7 +382,7 @@ def emit_ir(rule: Dict, out_dir: Path, pattern_override: str | None = None, id_s
         src_ir = "\n".join(
             [
                 f"; Rule: {rule_id_full}",
-                f"; Expression: {pattern}",
+                expr_comment(pattern).rstrip("\n"),
                 f"define i32 @src({params_sig}) {{",
                 "entry:",
                 f"  br i1 {cond_literal}, label %then, label %else",
@@ -254,7 +405,7 @@ def emit_ir(rule: Dict, out_dir: Path, pattern_override: str | None = None, id_s
             tgt_body += "\n"
         tgt_ir = (
             f"; Rule: {rule_id_full}\n"
-            f"; Expression: {fix}\n"
+            f"{expr_comment(fix)}"
             f"define i32 @tgt({params_sig}) {{\n"
             f"entry:\n"
             f"{tgt_body}  ret i32 {tgt_val}\n"
@@ -277,7 +428,7 @@ def emit_ir(rule: Dict, out_dir: Path, pattern_override: str | None = None, id_s
                 body += "\n"
             return (
                 f"; Rule: {rule_id_full}\n"
-                f"; Expression: {pattern if name=='src' else fix}\n"
+                f"{expr_comment(pattern if name=='src' else fix)}"
                 f"define i32 @{name}({params_sig}) {{\n"
                 f"entry:\n"
                 f"{body}  ret i32 {result}\n"

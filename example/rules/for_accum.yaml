@@ -1,0 +1,24 @@
+rules:
+  - id: loop-for-accum-fold
+    message: "Fold for(i=0;i<n;i++) a += x; into a += n * x;"
+    languages: [c, cpp]
+    severity: INFO
+    patterns:
+      - pattern-either:
+        - pattern: |
+            for (int $I = 0; $I < $N; $I++) {
+              $A += $X;
+            }
+        - pattern: |
+            for ($I = 0; $I < $N; $I++) {
+              $A += $X;
+            }
+    fix: $A += $N * $X;
+    metadata:
+      for_accumulate:
+        iterator: $I
+        bound: $N
+        accumulator: $A
+        term: $X
+      intent: loop_accumulate_to_mul
+      description: collapse counted addition loop into multiply-add

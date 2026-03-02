@@ -1,0 +1,12 @@
+rules:
+  - id: loop-const-fold
+    message: "Fold while(0){...} return E; into return E;"
+    languages: [c, cpp]
+    severity: INFO
+    patterns:
+      - pattern: |
+          while (0) { $ANY; } return $E;
+    fix: return $E;
+    metadata:
+      loop_constant: false
+      intent: loop_const_fold
