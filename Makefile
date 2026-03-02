@@ -6,6 +6,10 @@ RULE_FILES := $(wildcard $(RULE_DIR)/*.yaml)
 BAD_RULE_DIR := example/bad_rules
 BAD_RULE_FILES := $(wildcard $(BAD_RULE_DIR)/*.yaml)
 BAD_LL_SRC := $(wildcard $(BAD_RULE_DIR)/*.ll)
+ALIVE_SAMPLE_DIR := example/alive
+BAD_ALIVE_SAMPLE_DIR := example/bad-alive
+ALIVE_SAMPLE_FILES := $(wildcard $(ALIVE_SAMPLE_DIR)/*.ll)
+BAD_ALIVE_SAMPLE_FILES := $(wildcard $(BAD_ALIVE_SAMPLE_DIR)/*.ll)
 CODE_DIR := example/code
 BUILD_DIR := build
 IR_DIR := $(BUILD_DIR)/ir
@@ -21,8 +25,10 @@ ALIVE_BIN ?= $(ALIVE2_BUILD)/alive-tv
 LLVM_DIR ?= /usr/lib/llvm-20/lib/cmake/llvm
 ALIVE2_REF ?= v20.0
 ALIVE_FLAGS ?= --smt-to=60000
+ALIVE_SAMPLE_LOG := $(BUILD_DIR)/alive-tests.log
+BAD_ALIVE_SAMPLE_LOG := $(BUILD_DIR)/bad-alive-tests.log
 
-.PHONY: all semgrep alive apply clean bad-ir bad-alive
+.PHONY: all semgrep alive apply clean bad-ir bad-alive alive-tests bad-alive-tests
 
 all: setup semgrep ir alive apply
 
@@ -120,6 +126,56 @@ bad-alive: bad-ir $(ALIVE2_BUILD)/.built
 	    rm -f $$tmp; \
 	  done; \
 	  if [ $$found = false ]; then echo "No bad IR files under $(BAD_IR_DIR)"; fi; \
+	else \
+	  echo "Alive2 binary '$(ALIVE_BIN)' not found even after build" && exit 1; \
+	fi
+
+alive-tests: $(ALIVE2_BUILD)/.built
+	@if [ -x "$(ALIVE_BIN)" ]; then \
+	  : > $(ALIVE_SAMPLE_LOG); \
+	  found=false; \
+	  for f in $(ALIVE_SAMPLE_FILES); do \
+	    [ -e $$f ] || continue; found=true; \
+	    echo "Checking sample $$f" | tee -a $(ALIVE_SAMPLE_LOG); \
+	    tmp=$$(mktemp); \
+	    $(ALIVE_BIN) $(ALIVE_FLAGS) $$f >$$tmp 2>&1 || true; \
+	    if grep -q "Transformation doesn't verify" $$tmp; then \
+	      echo "Sample failed: $$f" | tee -a $(ALIVE_SAMPLE_LOG); \
+	      cat $$tmp | tee -a $(ALIVE_SAMPLE_LOG); \
+	      rm -f $$tmp; \
+	      exit 1; \
+	    else \
+	      echo "Sample verified: $$f" | tee -a $(ALIVE_SAMPLE_LOG); \
+	      cat $$tmp >> $(ALIVE_SAMPLE_LOG); \
+	    fi; \
+	    rm -f $$tmp; \
+	  done; \
+	  if [ $$found = false ]; then echo "No Alive samples under $(ALIVE_SAMPLE_DIR)" | tee -a $(ALIVE_SAMPLE_LOG); fi; \
+	else \
+	  echo "Alive2 binary '$(ALIVE_BIN)' not found even after build" && exit 1; \
+	fi
+
+bad-alive-tests: $(ALIVE2_BUILD)/.built
+	@if [ -x "$(ALIVE_BIN)" ]; then \
+	  : > $(BAD_ALIVE_SAMPLE_LOG); \
+	  found=false; \
+	  for f in $(BAD_ALIVE_SAMPLE_FILES); do \
+	    [ -e $$f ] || continue; found=true; \
+	    echo "Expecting failure for sample $$f" | tee -a $(BAD_ALIVE_SAMPLE_LOG); \
+	    tmp=$$(mktemp); \
+	    $(ALIVE_BIN) $(ALIVE_FLAGS) $$f >$$tmp 2>&1 || true; \
+	    if grep -q "Transformation doesn't verify" $$tmp; then \
+	      echo "Correctly rejected: $$f" | tee -a $(BAD_ALIVE_SAMPLE_LOG); \
+	      cat $$tmp >> $(BAD_ALIVE_SAMPLE_LOG); \
+	    else \
+	      echo "Unexpected success: $$f" | tee -a $(BAD_ALIVE_SAMPLE_LOG); \
+	      cat $$tmp | tee -a $(BAD_ALIVE_SAMPLE_LOG); \
+	      rm -f $$tmp; \
+	      exit 1; \
+	    fi; \
+	    rm -f $$tmp; \
+	  done; \
+	  if [ $$found = false ]; then echo "No bad Alive samples under $(BAD_ALIVE_SAMPLE_DIR)" | tee -a $(BAD_ALIVE_SAMPLE_LOG); fi; \
 	else \
 	  echo "Alive2 binary '$(ALIVE_BIN)' not found even after build" && exit 1; \
 	fi
